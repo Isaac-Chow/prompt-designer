@@ -1,0 +1,12 @@
+# Core — Pydantic AI agent framework
+pydantic-ai>=0.0.30
+pydantic>=2.0.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Web Search (free, no API key)
+duckduckgo-search>=6.0.0
+
+# Optional: Logfire monitoring
+logfire>=0.50.0
