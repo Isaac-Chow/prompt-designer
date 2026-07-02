@@ -16,7 +16,7 @@
 # > Import BaseModel and Field from pydantic
 # Reference: https://docs.pydantic.dev/latest/concepts/models/
 # Reference: https://docs.pydantic.dev/latest/concepts/fields/
-#
+
 # > Import field_validator from pydantic
 # Reference: https://docs.pydantic.dev/latest/concepts/validators/#field-validators
 #
@@ -29,8 +29,10 @@
 # > Import uuid for generating unique session IDs
 # Reference: https://docs.python.org/3/library/uuid.html
 # YOUR CODE STARTS HERE
-
-
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional
+from datetime import datetime
+import uuid
 # YOUR CODE ENDS HERE
 
 
@@ -57,7 +59,14 @@
 #   showing the title, url, and snippet in markdown link format
 # Reference: https://docs.python.org/3/reference/datamodel.html#object.__str__
 # YOUR CODE STARTS HERE
+class SearchResult(BaseModel):
+    title: str
+    url: str
+    snippet: str
+    source: str = "web"
 
+    def __str__(self) -> str:
+        return f"[{self.title}]({self.url}): {self.snippet}"
 
 # YOUR CODE ENDS HERE
 
@@ -84,7 +93,16 @@
 #   "http://" or "https://", and raises a ValueError if it does not
 # Reference: https://docs.pydantic.dev/latest/concepts/validators/#field-validators
 # YOUR CODE STARTS HERE
+class References(BaseModel):
+    title: str = Field(..., description="Title of the source")
+    url: str = Field(..., description="Unique URL of the source")
+    snippet: Optional[str] = Field(None, description="Relevant excerpt from the source")
 
+    @field_validator('url')
+    def validate_url(cls, value):
+        if not (value.startswith("http://") or value.startswith("https://")):
+            raise ValueError("URL must start with 'http://' or 'https://'")
+        return value
 
 # YOUR CODE ENDS HERE
 
@@ -95,19 +113,19 @@
 # > Create a class called AgentResponse that inherits from BaseModel
 # Reference: https://docs.pydantic.dev/latest/concepts/models/#basic-model-usage
 #
-# > Inside the class, create a field called answer of type str using Field with
+# > Inside the class, create a field called `answer` of type str using Field with
 #   description "The comprehensive answer to the question"
 # Reference: https://docs.pydantic.dev/latest/concepts/fields/#field-function
 #
-# > Inside the class, create a field called confidence of type str using Field with
+# > Inside the class, create a field called `confidence` of type str using Field with
 #   a default of "medium" and description "Confidence level: high, medium, or low"
 # Reference: https://docs.pydantic.dev/latest/concepts/fields/#field-function
 #
-# > Inside the class, create a field called key_points of type list[str] using Field
+# > Inside the class, create a field called `key_points` of type list[str] using Field
 #   with default_factory=list and description "Key takeaways as bullet points"
 # Reference: https://docs.pydantic.dev/latest/concepts/fields/#field-function
 #
-# > Inside the class, create a field called references of type list[Reference] using Field
+# > Inside the class, create a field called `references` of type list[Reference] using Field
 #   with min_length=1 and description "List of unique references with URLs"
 # Reference: https://docs.pydantic.dev/latest/concepts/fields/#field-function
 #
@@ -119,7 +137,27 @@
 #   by comparing the list of urls to a set of urls, and raises a ValueError if duplicates exist
 # Reference: https://docs.pydantic.dev/latest/concepts/validators/#field-validators
 # YOUR CODE STARTS HERE
+class AgentResponse(BaseModel):
+    answer: str = Field(..., description="The comprehensive answer to the question")
+    confidence: str = Field("medium", description="Confidence level: high, medium, or low")
+    key_points: list[str] = Field(default_factory=list, description="Key takeaways as bullet points")
+    references: list[References] = Field(..., min_length=1, description="List of unique references with URLs")
 
+    @field_validator('confidence')
+    def validate_confidence(cls, value):
+        """Validate confidence of the response"""
+        value = value.lower()
+        if value not in {"high", "medium", "low"}:
+            return "medium"
+        return value
+
+    @field_validator('references')
+    def validate_unique_references(cls, value):
+        """Validate the references generated"""
+        urls = [ref.url for ref in value]
+        if len(urls) != len(set(urls)):
+            raise ValueError("All reference URLs must be unique")
+        return value
 
 # YOUR CODE ENDS HERE
 
@@ -139,7 +177,16 @@
 #   by calling self.user_template.format(question=question, search_results=search_results)
 # Reference: https://docs.python.org/3/library/stdtypes.html#str.format
 # YOUR CODE STARTS HERE
+class PromptTemplate(BaseModel):
+    name: str
+    version: str
+    system_prompt: str
+    user_template: str
+    file_path: str
 
+    def format_user_prompt(self, question: str, search_results: str) -> str:
+        """Format the user prompt with the given question and search results"""
+        return self.user_template.format(question=question, search_results=search_results)
 
 # YOUR CODE ENDS HERE
 
@@ -167,6 +214,15 @@
 #   - execution_time_seconds: Optional[float] with default None
 # Reference: https://docs.pydantic.dev/latest/concepts/fields/#field-function
 # YOUR CODE STARTS HERE
-
+class QuerySession(BaseModel):
+    session_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    question: str
+    prompt_used: str
+    model_used: str
+    timestamp: datetime = Field(default_factory=datetime.now)
+    response: Optional[AgentResponse] = None
+    raw_response: Optional[str] = None
+    search_results: list[SearchResult] = Field(default_factory=list)
+    execution_time_seconds: Optional[float] = None
 
 # YOUR CODE ENDS HERE

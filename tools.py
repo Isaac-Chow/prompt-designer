@@ -27,12 +27,22 @@
 # > Import json for parsing PubMed JSON responses
 # Reference: https://docs.python.org/3/library/json.html
 #
-# > Use a try/except block to import DDGS from duckduckgo_search
-#   Set a flag HAS_DUCKDUCKGO = True if successful, False if ImportError
+# > Use a try/except block to import DDGS from duckduckgo_search # (Note:) Later version imports DDGS from ddgs
+#   Set bDUCKDUCKGO = True if successful, False if ImportError
 # Reference: https://pypi.org/project/duckduckgo-search/
 # Reference: https://docs.python.org/3/tutorial/errors.html#handling-exceptions
 # YOUR CODE STARTS HERE
-
+from models.py import SearchResult
+import xml.etree.ElementTree as ET
+import urllib.request
+import urllib.parse
+import json
+try:
+    from duckduckgo_search import DDGS
+    HAS_DUCKDUCKGO = True
+except ImportError:
+    # from ddgs import DDGS
+    HAS_DUCKDUCKGO = False
 
 # YOUR CODE ENDS HERE
 
@@ -71,7 +81,56 @@
 #   and returns a list of 2 mock SearchResult objects for testing without the package
 # Reference: https://docs.pydantic.dev/latest/concepts/models/#basic-model-usage
 # YOUR CODE STARTS HERE
+class DuckDuckGoSearchTool:
+    """Web search using DuckDuckGo (free, no API key required)."""
 
+    def __init__(self, max_results: int = 5):
+        self.max_results = max_results
+
+    def search(self, query: str) -> list[SearchResult]:
+        """Search the web using DuckDuckGo."""
+        if not HAS_DUCKDUCKGO:
+            print("Warning: duckduckgo-search not installed. Using mock results.")
+            return self._mock_search(query)
+
+        try:
+            results = []
+            with DDGS() as ddgs:
+                for r in ddgs.text(query, max_results=self.max_results):
+                    results.append(SearchResult(
+                        title=r.get('title', 'No title'),
+                        url=r.get('href', r.get('link', '')),
+                        snippet=r.get('body', r.get('snippet', '')),
+                        source="web"
+                    ))
+            return results
+        except Exception as e:
+            print(f"DuckDuckGo search error: {e}")
+            return self._mock_search(query)
+
+    # private mock_search(...)
+    # _account_details(): AccountDetails
+    # change transaction status
+    # return "Confirmed" .
+    # 
+    # search("q")
+    # 
+    def _mock_search(self, query: str) -> list[SearchResult]:
+        """Return mock results for testing without the duckduckgo-search package."""
+        return [
+            SearchResult(
+                title=f"Wikipedia: {query}",
+                url=f"https://en.wikipedia.org/wiki/{query.replace(' ', '_')}",
+                snippet=f"Wikipedia article about {query}.",
+                source="web"
+            ),
+            SearchResult(
+                title=f"Britannica: {query}",
+                url=f"https://www.britannica.com/topic/{query.replace(' ', '-')}",
+                snippet=f"Encyclopedic overview of {query}.",
+                source="web"
+            ),
+        ]
 
 # YOUR CODE ENDS HERE
 
@@ -110,7 +169,56 @@
 # Reference: https://docs.python.org/3/library/urllib.request.html#urllib.request.urlopen
 # Reference: https://docs.python.org/3/library/urllib.parse.html#urllib.parse.urlencode
 # YOUR CODE STARTS HERE
+class ArxivSearchTool:
+    """Search academic papers on ArXiv (free, no API key required)."""
 
+    def __init__(self, max_results: int = 5):
+        self.max_results = max_results
+        self.base_url = "http://export.arxiv.org/api/query"
+
+    def search(self, query: str) -> list[SearchResult]:
+        """Search ArXiv for academic papers matching the query."""
+        try:
+            params = urllib.parse.urlencode({
+                'search_query': f'all:{query}',
+                'start': 0,
+                'max_results': self.max_results,
+            })
+            url = f"{self.base_url}?{params}"
+
+            with urllib.request.urlopen(url, timeout=10) as resp:
+                response_text = resp.read().decode('utf-8')
+
+            #  DOM -> Document Object Model
+            # Elemenent Tree
+            # 
+            root = ET.fromstring(response_text)
+            ns = {'atom': 'http://www.w3.org/2005/Atom'}
+
+            results = []
+            for entry in root.findall('atom:entry', ns):
+                title_elem = entry.find('atom:title', ns)
+                id_elem = entry.find('atom:id', ns)
+                summary_elem = entry.find('atom:summary', ns)
+
+                if title_elem is None or id_elem is None or summary_elem is None:
+                    continue
+
+                title = title_elem.text.strip().replace('\n', ' ')
+                paper_url = id_elem.text.strip()
+                snippet = summary_elem.text.strip().replace('\n', ' ')[:300] # </br>
+
+                results.append(SearchResult(
+                    title=title,
+                    url=paper_url,
+                    snippet=snippet,
+                    source="arxiv"
+                ))
+            return results
+        except Exception as e:
+            print(f"ArXiv search error: {e}")
+            return []
+    
 
 # YOUR CODE ENDS HERE
 
@@ -158,7 +266,68 @@
 # Reference: https://www.ncbi.nlm.nih.gov/books/NBK25499/#chapter4.ESummary
 # Reference: https://docs.python.org/3/library/json.html#json.loads
 # YOUR CODE STARTS HERE
+class PubMedSearchTool:
+    """Search biomedical literature on PubMed (free, no API key required)."""
 
+    def __init__(self, max_results: int = 5):
+        self.max_results = max_results
+        self.search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+        self.summary_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
+
+    def search(self, query: str) -> list[SearchResult]:
+        """Search PubMed for biomedical papers matching the query."""
+        try:
+            # Step A — Search for PubMed IDs
+            search_params = urllib.parse.urlencode({
+                'db': 'pubmed',
+                'term': query,
+                'retmax': self.max_results,
+                'retmode': 'json',
+            })
+            search_url = f"{self.search_url}?{search_params}"
+
+            with urllib.request.urlopen(search_url, timeout=10) as resp:
+                search_text = resp.read().decode('utf-8')
+
+            search_data = json.loads(search_text)
+            id_list = search_data.get('esearchresult', {}).get('idlist', [])
+
+            if not id_list:
+                return []
+
+            # Step B — Fetch summaries for the IDs
+            summary_params = urllib.parse.urlencode({
+                'db': 'pubmed',
+                'id': ','.join(id_list),
+                'retmode': 'json',
+            })
+            summary_url = f"{self.summary_url}?{summary_params}"
+
+            with urllib.request.urlopen(summary_url, timeout=10) as resp:
+                summary_text = resp.read().decode('utf-8')
+
+            summary_data = json.loads(summary_text)
+            result_dict = summary_data.get('result', {})
+
+            results = []
+            for pmid in id_list:
+                article = result_dict.get(pmid, {})
+                if not isinstance(article, dict):
+                    continue
+
+                title = article.get('title', 'No title')
+                snippet = article.get('sorttitle', title)[:300]
+
+                results.append(SearchResult(
+                    title=title,
+                    url=f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+                    snippet=snippet,
+                    source="pubmed"
+                ))
+            return results
+        except Exception as e:
+            print(f"PubMed search error: {e}")
+            return []
 
 # YOUR CODE ENDS HERE
 
@@ -180,7 +349,20 @@
 # > Return the joined formatted entries separated by newlines
 # Reference: https://docs.python.org/3/library/stdtypes.html#str.join
 # YOUR CODE STARTS HERE
+def format_results(results: list[SearchResult]) -> str:
+    """Format a list of search results as a readable string for the prompt."""
+    if not results:
+        return "No search results found."
 
+    formatted = []
+    for i, result in enumerate(results, 1):
+        formatted.append(
+            f"[{i}] {result.title}\n"
+            f"    Source: {result.source}\n"
+            f"    URL: {result.url}\n"
+            f"    {result.snippet}\n"
+        )
+    return "\n".join(formatted)
 
 # YOUR CODE ENDS HERE
 
@@ -197,6 +379,12 @@
 #   each initialized with max_results
 # Reference: https://docs.python.org/3/tutorial/datastructures.html#dictionaries
 # YOUR CODE STARTS HERE
-
+def get_search_tools(max_results: int = 5) -> dict:
+    """Factory function to get all search tool instances."""
+    return {
+        "web": DuckDuckGoSearchTool(max_results),
+        "arxiv": ArxivSearchTool(max_results),
+        "pubmed": PubMedSearchTool(max_results),
+    }
 
 # YOUR CODE ENDS HERE
