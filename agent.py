@@ -45,6 +45,28 @@
 # > Import PromptLoader from prompt_loader.py
 # YOUR CODE STARTS HERE
 
+import os
+import time
+import json
+from datetime import datetime
+from typing import Optional
+from dataclasses import dataclass
+
+from dotenv import load_dotenv
+from pydantic_ai import Agent, RunContext
+
+load_dotenv()
+
+try:
+    import logfire
+    HAS_LOGFIRE = True
+except ImportError:
+    logfire = None
+    HAS_LOGFIRE = False
+
+from models import AgentResponse, QuerySession, SearchResult
+from tools import get_search_tools, format_results
+from prompt_loader import PromptLoader
 
 # YOUR CODE ENDS HERE
 
@@ -63,6 +85,12 @@
 #   - max_results: int with a default of 5
 # YOUR CODE STARTS HERE
 
+@dataclass
+class ResearchDeps:
+    """Dependency container for the Pydantic AI agent."""
+    search_tools: dict
+    query: str = ""
+    max_results: int = 5
 
 # YOUR CODE ENDS HERE
 
@@ -93,6 +121,36 @@
 # Reference: https://ai.pydantic.dev/tools/#registering-tools
 # YOUR CODE STARTS HERE
 
+research_agent = Agent(
+    'mistral:mistral-large-latest',
+    deps_type=ResearchDeps,
+    output_type=AgentResponse,
+    system_prompt=(
+        "You are an intelligent research agent. Answer questions using the provided "
+        "search tools. Always provide references with unique URLs."
+    ),
+)
+
+
+@research_agent.tool
+async def search_web(ctx: RunContext[ResearchDeps], query: str) -> str:
+    """Search the web using DuckDuckGo for general information."""
+    results = ctx.deps.search_tools["web"].search(query)
+    return format_results(results)
+
+
+@research_agent.tool
+async def search_arxiv(ctx: RunContext[ResearchDeps], query: str) -> str:
+    """Search ArXiv for academic and scientific papers."""
+    results = ctx.deps.search_tools["arxiv"].search(query)
+    return format_results(results)
+
+
+@research_agent.tool
+async def search_pubmed(ctx: RunContext[ResearchDeps], query: str) -> str:
+    """Search PubMed for biomedical and life sciences literature."""
+    results = ctx.deps.search_tools["pubmed"].search(query)
+    return format_results(results)
 
 # YOUR CODE ENDS HERE
 
@@ -113,6 +171,16 @@
 # Reference: https://ai.pydantic.dev/logfire/
 # YOUR CODE STARTS HERE
 
+def setup_logfire() -> None:
+    """Configure Logfire monitoring if available and token is set."""
+    token = os.getenv("LOGFIRE_TOKEN")
+    if token and HAS_LOGFIRE and logfire is not None:
+        try:
+            logfire.configure(token=token, service_name="prompt-designer")
+            logfire.instrument_pydantic_ai()
+            print("Logfire monitoring enabled.")
+        except Exception as e:
+            print(f"Logfire setup warning: {e}")
 
 # YOUR CODE ENDS HERE
 
@@ -179,5 +247,180 @@
 # Reference: https://docs.python.org/3/library/functions.html#print
 # YOUR CODE STARTS HERE
 
+# model = 
+class ResearchAgentRunner:
+    """
+    Manages the Pydantic AI research agent lifecycle.
+    Supports multiple prompt templates, search tools, and prompt comparison.
+    """
+
+    def __init__(
+        self,
+        model: str = "mistral-medium-3-5",
+        max_search_results: int = 5,
+    ):
+        load_dotenv()
+        setup_logfire()
+        self.model = model
+        self.prompt_loader = PromptLoader()
+        self.search_tools = get_search_tools(max_search_results)
+        self.sessions: list[QuerySession] = []
+        self.max_search_results = max_search_results
+
+    def list_prompts(self) -> list[str]:
+        """List all available prompt template names."""
+        return self.prompt_loader.list_prompts()
+
+    async def ask(
+        self,
+        question: str,
+        prompt_name: str = "structured",
+    ) -> QuerySession:
+        """
+        Ask a question using a specific prompt template and get a structured response.
+        """
+        start_time = time.time()
+
+        prompt_template = self.prompt_loader.load_prompt(prompt_name)
+
+        # Gather search results from all tools
+        all_results: list[SearchResult] = []
+        for tool_name, tool in self.search_tools.items():
+            try:
+                results = tool.search(question)
+                all_results.extend(results)
+            except Exception as e:
+                print(f"Search error ({tool_name}): {e}")
+
+        search_results_text = format_results(all_results)
+
+        # Build the user prompt from the template
+        user_prompt = prompt_template.format_user_prompt(
+            question=question,
+            search_results=search_results_text,
+        )
+
+        # Create dependencies for the agent
+        deps = ResearchDeps(
+            search_tools=self.search_tools,
+            query=question,
+            max_results=self.max_search_results,
+        )
+
+        try:
+            # Run the Pydantic AI agent with the template's system prompt
+            result = await research_agent.run(
+                user_prompt,
+                deps=deps,
+                model=self.model,
+                system_prompt=prompt_template.system_prompt,
+            )
+
+            session = QuerySession(
+                question=question,
+                prompt_used=prompt_name,
+                model_used=self.model,
+                response=result.data,
+                search_results=all_results,
+                execution_time_seconds=time.time() - start_time,
+            )
+
+        except Exception as e:
+            session = QuerySession(
+                question=question,
+                prompt_used=prompt_name,
+                model_used=self.model,
+                raw_response=f"Error: {str(e)}",
+                search_results=all_results,
+                execution_time_seconds=time.time() - start_time,
+            )
+
+        self.sessions.append(session)
+        return session
+
+    def ask_sync(
+        self,
+        question: str,
+        prompt_name: str = "structured",
+    ) -> QuerySession:
+        """Synchronous wrapper around the async ask method."""
+        import asyncio
+        return asyncio.run(self.ask(question, prompt_name))
+
+    async def compare_prompts(
+        self,
+        question: str,
+        prompt_names: Optional[list[str]] = None,
+    ) -> dict:
+        """
+        Compare multiple prompt templates on the same question.
+        Returns a dictionary with comparison results.
+        """
+        if prompt_names is None:
+            prompt_names = self.list_prompts()
+
+        results = {
+            'question': question,
+            'model': self.model,
+            'timestamp': datetime.now().isoformat(),
+            'comparisons': [],
+        }
+
+        for prompt_name in prompt_names:
+            print(f"  Testing prompt: {prompt_name}...")
+            session = await self.ask(question, prompt_name)
+
+            comparison = {
+                'prompt': prompt_name,
+                'execution_time': session.execution_time_seconds,
+                'success': session.response is not None,
+            }
+
+            if session.response:
+                comparison['answer_length'] = len(session.response.answer)
+                comparison['num_references'] = len(session.response.references)
+                comparison['confidence'] = session.response.confidence
+                comparison['reference_urls'] = [
+                    ref.url for ref in session.response.references
+                ]
+            else:
+                comparison['error'] = session.raw_response
+
+            results['comparisons'].append(comparison)
+
+        return results
+
+    def export_sessions(self, filepath: str = "sessions.json") -> None:
+        """Export all sessions to a JSON file for review."""
+        data = [session.model_dump() for session in self.sessions]
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, default=str)
+        print(f"Exported {len(self.sessions)} sessions to {filepath}")
+
+    def print_response(self, session: QuerySession) -> None:
+        """Pretty-print a session response."""
+        print("\n" + "=" * 60)
+        print(f"Question: {session.question}")
+        print(f"Prompt: {session.prompt_used} | Model: {session.model_used}")
+        print(f"Time: {session.execution_time_seconds:.2f}s")
+        print("=" * 60)
+
+        if session.response:
+            print(f"\nANSWER:\n{session.response.answer}")
+            print(f"\nConfidence: {session.response.confidence}")
+
+            if session.response.key_points:
+                print("\nKEY POINTS:")
+                for point in session.response.key_points:
+                    print(f"  - {point}")
+
+            print("\nREFERENCES:")
+            for i, ref in enumerate(session.response.references, 1):
+                print(f"  [{i}] {ref.title}")
+                print(f"      {ref.url}")
+        else:
+            print(f"\nError or raw response:\n{session.raw_response}")
+
+        print("\n" + "=" * 60)
 
 # YOUR CODE ENDS HERE

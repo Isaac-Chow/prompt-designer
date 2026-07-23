@@ -15,7 +15,8 @@
 # > Import ResearchAgentRunner from agent.py
 # Reference: https://docs.python.org/3/tutorial/modules.html
 # YOUR CODE STARTS HERE
-
+import asyncio
+from agent import ResearchAgentRunner
 
 # YOUR CODE ENDS HERE
 
@@ -54,6 +55,86 @@
 # Reference: https://docs.python.org/3/library/functions.html#input
 # Reference: https://docs.python.org/3/reference/compound_stmts.html#the-while-statement
 # YOUR CODE STARTS HERE
+async def interactive_mode():
+    """Run the Prompt Designer agent in interactive mode."""
+    print("\n" + "=" * 55)
+    print("  Prompt Designer — Pydantic AI Research Agent")
+    print("=" * 55)
+
+    try:
+        runner = ResearchAgentRunner()
+        print(f"Initialized with model: {runner.model}")
+    except Exception as e:
+        print(f"Error initializing agent: {e}")
+        print("Make sure MISTRAL_API_KEY is set in your .env file.")
+        return
+
+    print(f"\nAvailable prompts: {', '.join(runner.list_prompts())}")
+    print("\nCommands:")
+    print("  ask <prompt> <question>  — Ask with specific prompt")
+    print("  compare <question>       — Compare all prompts")
+    print("  prompts                  — List prompt templates")
+    print("  export                   — Export sessions to JSON")
+    print("  quit                     — Exit")
+
+    while True:
+        try:
+            user_input = input("\n> ").strip()
+
+            if not user_input:
+                continue
+
+            if user_input.lower() == "quit":
+                print("Goodbye!")
+                break
+
+            elif user_input.lower() == "prompts":
+                for name in runner.list_prompts():
+                    info = runner.prompt_loader.get_prompt_info(name)
+                    print(f"  - {name} (v{info['version']}, {info['system_prompt_length']} chars)")
+
+            elif user_input.lower() == "export":
+                runner.export_sessions()
+
+            elif user_input.lower().startswith("compare "):
+                question = user_input[8:].strip()
+                if question:
+                    print(f"\nComparing all prompts on: '{question}'")
+                    results = await runner.compare_prompts(question)
+                    print("\nCOMPARISON RESULTS:")
+                    for comp in results['comparisons']:
+                        status = "OK" if comp['success'] else "FAIL"
+                        refs = comp.get('num_references', 0)
+                        time_s = comp.get('execution_time', 0)
+                        conf = comp.get('confidence', 'n/a')
+                        print(f"  [{status}] {comp['prompt']}: {refs} refs, "
+                              f"confidence={conf}, {time_s:.2f}s")
+                else:
+                    print("Usage: compare <question>")
+
+            elif user_input.lower().startswith("ask "):
+                parts = user_input[4:].strip().split(' ', 1)
+                if len(parts) == 2:
+                    prompt_name, question = parts
+                    if prompt_name in runner.list_prompts():
+                        session = await runner.ask(question, prompt_name)
+                        runner.print_response(session)
+                    else:
+                        print(f"Unknown prompt: {prompt_name}")
+                        print(f"Available: {', '.join(runner.list_prompts())}")
+                else:
+                    print("Usage: ask <prompt_name> <question>")
+
+            else:
+                # Default: treat as question using "structured" prompt
+                session = await runner.ask(user_input, "structured")
+                runner.print_response(session)
+
+        except KeyboardInterrupt:
+            print("\nGoodbye!")
+            break
+        except Exception as e:
+            print(f"Error: {e}")
 
 
 # YOUR CODE ENDS HERE
@@ -66,6 +147,7 @@
 # Reference: https://docs.python.org/3/library/asyncio-runner.html#asyncio.run
 # Reference: https://docs.python.org/3/library/__main__.html
 # YOUR CODE STARTS HERE
-
+if __name__ == "__main__":
+    asyncio.run(interactive_mode())
 
 # YOUR CODE ENDS HERE

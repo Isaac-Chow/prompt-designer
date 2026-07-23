@@ -32,13 +32,14 @@
 # Reference: https://pypi.org/project/duckduckgo-search/
 # Reference: https://docs.python.org/3/tutorial/errors.html#handling-exceptions
 # YOUR CODE STARTS HERE
-from models.py import SearchResult
+from models import SearchResult
 import xml.etree.ElementTree as ET
 import urllib.request
 import urllib.parse
 import json
 try:
-    from duckduckgo_search import DDGS
+    # from duckduckgo_search import DDGS
+    from ddgs import DDGS
     HAS_DUCKDUCKGO = True
 except ImportError:
     # from ddgs import DDGS
